@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ops Dashboard</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100">
+<div id="app" class="min-h-screen"></div>
+
+<script type="text/babel">
+const { useEffect, useState } = React;
+
+const STATUS_ENDPOINT = "/api/status";
+const LISTINGS_ENDPOINT = "/api/listings";
+const SOCIAL_ENDPOINT = "/api/social";
+
+const Section = ({ title, children, actions }) => (
+    <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-lg">
+        <header className="flex flex-wrap items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+            {actions}
+        </header>
+        <div>{children}</div>
+    </section>
+);
+
+const Badge = ({ children, variant = "default" }) => {
+    const colors = {
+        default: "bg-emerald-400/10 text-emerald-300 border border-emerald-400/30",
+        error: "bg-rose-500/10 text-rose-300 border border-rose-500/30",
+        warning: "bg-amber-500/10 text-amber-200 border border-amber-500/30",
+    };
+    return (
+        <span className={`px-3 py-1 text-xs font-semibold tracking-wide rounded-full ${colors[variant]}`}>
+            {children}
+        </span>
+    );
+};
+
+const StatusPanel = () => {
+    const [status, setStatus] = useState(null);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    const loadStatus = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const response = await fetch(STATUS_ENDPOINT);
+            if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+            const payload = await response.json();
+            setStatus(payload);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadStatus();
+    }, []);
+
+    return (
+        <Section
+            title="Backend · PostgreSQL"
+            actions={
+                <button
+                    onClick={loadStatus}
+                    className="px-3 py-2 text-sm font-medium bg-slate-50 text-slate-900 rounded-lg hover:bg-white/80 transition"
+                >
+                    Refresh
+                </button>
+            }
+        >
+            {loading && <p className="text-slate-400 text-sm">Checking Flask server…</p>}
+            {error && (
+                <p className="text-sm text-rose-300">
+                    Could not reach backend ({error}). Make sure Flask is running on port 5000.
+                </p>
+            )}
+            {status && (
+                <dl className="grid gap-4 text-sm">
+                    <div>
+                        <dt className="text-slate-400 uppercase tracking-wide text-xs">App</dt>
+                        <dd className="text-base font-semibold flex items-center gap-2">
+                            {status.app}
+                            <Badge>{status.version ?? "v1"}</Badge>
+                        </dd>
+                    </div>
+                    <div>
+                        <dt className="text-slate-400 uppercase tracking-wide text-xs">Database</dt>
+                        <dd className="flex items-center gap-3">
+                            {status.database?.connected ? (
+                                <>
+                                    <Badge>Connected</Badge>
+                                    <span className="text-slate-300">
+                                        {status.database.database} · {status.database.user}
+                                    </span>
+                                </>
+                            ) : (
+                                <>
+                                    <Badge variant="error">Offline</Badge>
+                                    <span className="text-slate-300">{status.database?.error ?? "unknown error"}</span>
+                                </>
+                            )}
+                        </dd>
+                    </div>
+                    {status.database?.server_time && (
+                        <div>
+                            <dt className="text-slate-400 uppercase tracking-wide text-xs">Server time</dt>
+                            <dd>{new Date(status.database.server_time).toLocaleString()}</dd>
+                        </div>
+                    )}
+                </dl>
+            )}
+        </Section>
+    );
+};
+
+const ListingForm = ({ onSuccess }) => {
+    const [title, setTitle] = useState("");
+    const [price, setPrice] = useState("");
+    const [status, setStatus] = useState("draft");
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState(null);
+
+    const submitListing = async (event) => {
+        event.preventDefault();
+        setSaving(true);
+        setError(null);
+        try {
+            const response = await fetch(LISTINGS_ENDPOINT, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title, price, status }),
+            });
+            if (!response.ok) {
+                const payload = await response.json();
+                throw new Error(payload.error ?? `Request failed (${response.status})`);
+            }
+            setTitle("");
+            setPrice("");
+            setStatus("draft");
+            onSuccess?.();
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <form className="space-y-4" onSubmit={submitListing}>
+            <div>
+                <label className="text-sm font-medium text-slate-300 block mb-2" htmlFor="title">
+                    Listing title
+                </label>
+                <input
+                    id="title"
+                    name="title"
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
+                    placeholder="New York Loft"
+                    required
+                />
+            </div>
+            <div className="flex gap-4 flex-col sm:flex-row">
+                <div className="flex-1">
+                    <label className="text-sm font-medium text-slate-300 block mb-2" htmlFor="price">
+                        Price (USD)
+                    </label>
+                    <input
+                        id="price"
+                        name="price"
+                        type="number"
+                        step="0.01"
+                        value={price}
+                        onChange={(event) => setPrice(event.target.value)}
+                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
+                        placeholder="450000"
+                        required
+                    />
+                </div>
+                <div className="flex-1">
+                    <label className="text-sm font-medium text-slate-300 block mb-2" htmlFor="status">
+                        Status
+                    </label>
+                    <select
+                        id="status"
+                        name="status"
+                        value={status}
+                        onChange={(event) => setStatus(event.target.value)}
+                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
+                    >
+                        <option value="draft">Draft</option>
+                        <option value="ready">Ready</option>
+                        <option value="published">Published</option>
+                    </select>
+                </div>
+            </div>
+            {error && <p className="text-sm text-rose-300">{error}</p>}
+            <button
+                type="submit"
+                disabled={saving}
+                className="w-full py-3 rounded-xl text-center font-semibold bg-emerald-400 text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                {saving ? "Saving…" : "Add listing"}
+            </button>
+        </form>
+    );
+};
+
+const ListingList = ({ listings, loading, onRefresh, error }) => (
+    <Section
+        title="Listings"
+        actions={
+            <button
+                onClick={onRefresh}
+                className="text-sm font-medium text-slate-300 px-3 py-2 rounded-lg border border-slate-800 hover:border-slate-600 transition"
+            >
+                Refresh
+            </button>
+        }
+    >
+        {loading && <p className="text-sm text-slate-400">Loading listings…</p>}
+        {error && <p className="text-sm text-rose-300">{error}</p>}
+        {!loading && !error && listings.length === 0 && (
+            <p className="text-sm text-slate-400">No listings captured yet.</p>
+        )}
+        <ul className="space-y-4">
+            {listings.map((listing) => (
+                <li key={listing.id} className="bg-slate-950/40 border border-slate-900 rounded-xl px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-base font-semibold">{listing.title}</p>
+                        <Badge variant={listing.status === "published" ? "default" : listing.status === "ready" ? "warning" : "error"}>
+                            {listing.status}
+                        </Badge>
+                    </div>
+                    <p className="text-sm text-slate-400 mt-1">
+                        {listing.price !== null ? `$${listing.price.toLocaleString()}` : "—"}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-2">
+                        {listing.created_at ? new Date(listing.created_at).toLocaleString() : "—"}
+                    </p>
+                </li>
+            ))}
+        </ul>
+    </Section>
+);
+
+const SocialPanel = () => {
+    const [entries, setEntries] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [platform, setPlatform] = useState("");
+    const [impressions, setImpressions] = useState("");
+    const [engagementRate, setEngagementRate] = useState("");
+    const [saving, setSaving] = useState(false);
+
+    const loadSocial = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const response = await fetch(SOCIAL_ENDPOINT);
+            if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+            const payload = await response.json();
+            setEntries(payload.items ?? []);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadSocial();
+    }, []);
+
+    const submitSocial = async (event) => {
+        event.preventDefault();
+        setSaving(true);
+        setError(null);
+        try {
+            const response = await fetch(SOCIAL_ENDPOINT, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    platform,
+                    impressions,
+                    engagement_rate: engagementRate,
+                }),
+            });
+            if (!response.ok) {
+                const payload = await response.json();
+                throw new Error(payload.error ?? `Request failed (${response.status})`);
+            }
+            setPlatform("");
+            setImpressions("");
+            setEngagementRate("");
+            loadSocial();
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <Section
+            title="Social performance"
+            actions={
+                <button
+                    onClick={loadSocial}
+                    className="text-sm font-medium text-slate-300 px-3 py-2 rounded-lg border border-slate-800 hover:border-slate-600 transition"
+                >
+                    Refresh
+                </button>
+            }
+        >
+            {loading && <p className="text-sm text-slate-400">Loading social metrics…</p>}
+            {error && <p className="text-sm text-rose-300">{error}</p>}
+            <ul className="space-y-3 mb-6">
+                {entries.map((entry) => (
+                    <li key={entry.id} className="bg-slate-950/40 border border-slate-900 rounded-xl px-4 py-3">
+                        <div className="flex items-center justify-between">
+                            <p className="font-semibold">{entry.platform}</p>
+                            <p className="text-sm text-slate-400">
+                                {entry.recorded_at ? new Date(entry.recorded_at).toLocaleString() : "—"}
+                            </p>
+                        </div>
+                        <p className="text-sm text-slate-300 mt-1">
+                            {entry.impressions.toLocaleString()} impressions ·{" "}
+                            {entry.engagement_rate !== null ? `${entry.engagement_rate}% engagement` : "n/a"}
+                        </p>
+                    </li>
+                ))}
+                {!loading && entries.length === 0 && (
+                    <p className="text-sm text-slate-400">No social updates yet.</p>
+                )}
+            </ul>
+            <form className="space-y-3" onSubmit={submitSocial}>
+                <div>
+                    <label className="text-sm font-medium text-slate-300 block mb-1" htmlFor="platform">
+                        Platform
+                    </label>
+                    <input
+                        id="platform"
+                        value={platform}
+                        onChange={(event) => setPlatform(event.target.value)}
+                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
+                        placeholder="LinkedIn"
+                        required
+                    />
+                </div>
+                <div>
+                    <label className="text-sm font-medium text-slate-300 block mb-1" htmlFor="impressions">
+                        Impressions
+                    </label>
+                    <input
+                        id="impressions"
+                        type="number"
+                        min="0"
+                        value={impressions}
+                        onChange={(event) => setImpressions(event.target.value)}
+                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
+                        placeholder="12400"
+                        required
+                    />
+                </div>
+                <div>
+                    <label className="text-sm font-medium text-slate-300 block mb-1" htmlFor="engagement">
+                        Engagement rate (%)
+                    </label>
+                    <input
+                        id="engagement"
+                        type="number"
+                        step="0.01"
+                        value={engagementRate}
+                        onChange={(event) => setEngagementRate(event.target.value)}
+                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
+                        placeholder="3.8"
+                    />
+                </div>
+                <button
+                    type="submit"
+                    disabled={saving}
+                    className="w-full py-3 rounded-xl text-center font-semibold bg-indigo-400 text-slate-950 hover:bg-indigo-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    {saving ? "Saving…" : "Log social metric"}
+                </button>
+            </form>
+        </Section>
+    );
+};
+
+const Dashboard = () => {
+    const [listings, setListings] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    const loadListings = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const response = await fetch(LISTINGS_ENDPOINT);
+            if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+            const payload = await response.json();
+            setListings(payload.items ?? []);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadListings();
+    }, []);
+
+    return (
+        <main className="max-w-6xl mx-auto px-6 py-12 space-y-10">
+            <header className="space-y-3">
+                <p className="uppercase text-xs font-semibold tracking-[0.3em] text-emerald-300">React + Tailwind</p>
+                <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">
+                    Operations control panel
+                </h1>
+                <p className="text-base text-slate-400">
+                    This UI is rendered with React 18, styled with Tailwind via CDN, and talks to the Flask API backed by PostgreSQL.
+                </p>
+            </header>
+            <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
+                <div className="space-y-6">
+                    <StatusPanel />
+                    <ListingList listings={listings} loading={loading} error={error} onRefresh={loadListings} />
+                </div>
+                <div className="space-y-6">
+                    <Section title="Add listing">
+                        <ListingForm onSuccess={loadListings} />
+                    </Section>
+                    <SocialPanel />
+                </div>
+            </div>
+        </main>
+    );
+};
+
+ReactDOM.createRoot(document.getElementById("app")).render(<Dashboard />);
+</script>
+</body>
+</html>
