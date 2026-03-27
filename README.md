@@ -7,7 +7,6 @@ This version is structured for Vercel Hobby instead of a long-running nginx host
 - `server.py` is the Flask entrypoint for Vercel Functions.
 - `public/index.html` is served as the static dashboard UI.
 - `vercel.json` schedules a daily cron request to `/api/cron/monday-sync`.
-- `vercel.json` also sets the Flask function `maxDuration` to `300` seconds for Hobby-plan Fluid compute.
 - Postgres schema creation is automatic on first request or sync.
 - Monday board syncs now replace stale rows that were removed from the source boards.
 
@@ -32,6 +31,7 @@ This version is structured for Vercel Hobby instead of a long-running nginx host
 3. Deploy.
 
 The cron schedule is defined in `vercel.json` as `0 13 * * *`, which is one run per day in UTC. On Hobby, Vercel executes cron jobs once per day and may trigger them at any time within the scheduled hour.
+The Flask function uses Vercel's default Fluid compute duration on Hobby, which is currently 300 seconds.
 
 ## Local Run
 
