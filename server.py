@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request
 
 from db_helpers import DatabaseDriverMissing, ensure_schema, get_connection
 from query import build_period_report_csv, compute_period_editor_hours, list_editors_with_sessions
@@ -14,7 +13,6 @@ from updateDb import sync_from_monday
 app = Flask(__name__)
 
 DEBUG_MODE = os.getenv("FLASK_DEBUG") == "1"
-PUBLIC_DIR = Path(__file__).resolve().parent / "public"
 
 
 def _error_response(message: str, status_code: int = 500):
@@ -29,9 +27,8 @@ def _cron_request_is_authorized():
 
 
 @app.route("/", methods=["GET"])
-@app.route("/index.html", methods=["GET"])
 def index():
-    return send_from_directory(PUBLIC_DIR, "index.html")
+    return redirect("/index.html", code=307)
 
 
 @app.route("/api/status", methods=["GET"])
