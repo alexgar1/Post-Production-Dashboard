@@ -19,6 +19,18 @@ def _error_response(message: str, status_code: int = 500):
     return jsonify({"status": "error", "message": message}), status_code
 
 
+def _probe_database():
+    with get_connection() as conn:
+        ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1;")
+            cur.fetchone()
+
+
+def _database_unavailable_response():
+    return _error_response("database_unavailable", status_code=500)
+
+
 def _cron_request_is_authorized():
     cron_secret = os.getenv("CRON_SECRET")
     if not cron_secret:
@@ -35,15 +47,12 @@ def index():
 def status():
     """Confirm Flask can reach Postgres."""
     try:
-        with get_connection() as conn:
-            ensure_schema(conn)
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1;")
-                cur.fetchone()
+        _probe_database()
     except DatabaseDriverMissing as exc:
         return _error_response(str(exc), status_code=500)
     except Exception:
-        return _error_response("database_unavailable", status_code=500)
+        app.logger.exception("database status check failed")
+        return _database_unavailable_response()
     return jsonify({"status": "ok"})
 
 
@@ -62,6 +71,13 @@ def period_report_endpoint():
     except DatabaseDriverMissing as exc:
         return _error_response(str(exc), status_code=500)
     except Exception:
+        app.logger.exception("period report generation failed")
+        try:
+            _probe_database()
+        except DatabaseDriverMissing as exc:
+            return _error_response(str(exc), status_code=500)
+        except Exception:
+            return _database_unavailable_response()
         return _error_response("failed_to_build_period_report", status_code=500)
 
     if request.args.get("format") == "csv":
@@ -82,6 +98,13 @@ def editors_endpoint():
     except DatabaseDriverMissing as exc:
         return _error_response(str(exc), status_code=500)
     except Exception:
+        app.logger.exception("editors load failed")
+        try:
+            _probe_database()
+        except DatabaseDriverMissing as exc:
+            return _error_response(str(exc), status_code=500)
+        except Exception:
+            return _database_unavailable_response()
         return _error_response("failed_to_load_editors", status_code=500)
 
     return jsonify({"status": "ok", "editors": editors})
