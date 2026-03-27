@@ -4,6 +4,11 @@ CREATE TABLE IF NOT EXISTS monday_users (
     pay_rate NUMERIC(6, 2)
 );
 
+CREATE TABLE IF NOT EXISTS dashboard_sync_state (
+    sync_key TEXT PRIMARY KEY,
+    last_synced_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS listing_items (
     item_id BIGINT PRIMARY KEY,
     board_id BIGINT NOT NULL,

@@ -7,7 +7,7 @@ import io
 import csv
 from typing import Dict, Iterable, List, Mapping, Tuple
 
-from db_helpers import DatabaseDriverMissing, ensure_schema, get_connection
+from db_helpers import DatabaseDriverMissing, ensure_schema, get_connection, get_last_sync_at
 
 TIME_TRACKING_TABLES = (
     "listing_items",
@@ -294,6 +294,7 @@ def _build_summary(
     user_daily: Mapping[str, Mapping[date, float]],
     users_map: Mapping[str, Mapping[str, object]],
     user_sessions: Mapping[str, Iterable[Tuple[datetime, datetime, str | None, str | None, int | None, int | None, bool]]] | None = None,
+    last_sync_at: datetime | None = None,
 ) -> Dict[str, object]:
     editors: List[Dict[str, object]] = []
     day_totals: List[float] = []
@@ -358,6 +359,7 @@ def _build_summary(
     return {
         "periodStart": period_start.isoformat(),
         "periodEnd": period_end.isoformat(),
+        "lastSyncedAt": last_sync_at.isoformat() if last_sync_at else None,
         "dayLabels": day_labels,
         "dayTotals": day_totals,
         "editors": editors,
@@ -378,6 +380,7 @@ def compute_period_editor_hours(start_date: str, end_date: str) -> Dict[str, obj
         rows = _query_period_daily_seconds(conn, period_start, period_end)
         session_rows = _query_period_sessions(conn, period_start, period_end)
         users_map = _load_user_map(conn)
+        last_sync_at = get_last_sync_at(conn)
     user_daily: Dict[str, Dict[date, float]] = {}
     user_sessions: Dict[str, List[Tuple[datetime, datetime, str | None]]] = {}
     for user_id, day_date, seconds in rows or []:
@@ -403,6 +406,7 @@ def compute_period_editor_hours(start_date: str, end_date: str) -> Dict[str, obj
         user_daily,
         users_map,
         user_sessions,
+        last_sync_at,
     )
 
 

@@ -1,5 +1,6 @@
 import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -31,6 +32,8 @@ BOARD_TABLES = {
         "subitems": "social_subitems",
     },
 }
+
+MONDAY_SYNC_KEY = "monday"
 
 
 class DatabaseDriverMissing(RuntimeError):
@@ -296,7 +299,38 @@ def _delete_missing_rows(conn, table_name, id_column, current_ids):
         cur.execute(f"DELETE FROM {table_name};")
 
 
-def sync_monday_database(board_payloads, users=None):
+def _store_sync_state(conn, synced_at):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO dashboard_sync_state (sync_key, last_synced_at)
+            VALUES (%s, %s)
+            ON CONFLICT (sync_key) DO UPDATE
+            SET last_synced_at = EXCLUDED.last_synced_at;
+            """,
+            (MONDAY_SYNC_KEY, synced_at),
+        )
+
+
+def get_last_sync_at(conn=None):
+    close_after = conn is None
+    active_conn = conn or _open_connection()
+    try:
+        if close_after:
+            ensure_schema(active_conn)
+        with active_conn.cursor() as cur:
+            cur.execute(
+                "SELECT last_synced_at FROM dashboard_sync_state WHERE sync_key = %s;",
+                (MONDAY_SYNC_KEY,),
+            )
+            row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        if close_after:
+            active_conn.close()
+
+
+def sync_monday_database(board_payloads, users=None, synced_at=None):
     """
     Persist Monday data into Postgres.
 
@@ -307,7 +341,7 @@ def sync_monday_database(board_payloads, users=None):
     }
     """
     if not board_payloads:
-        return {"boards": {}, "userCount": len(users or {})}
+        return {"boards": {}, "userCount": len(users or {}), "lastSyncedAt": None}
 
     formatted_payloads = {}
     aggregated_users = dict(users or {})
@@ -321,7 +355,9 @@ def sync_monday_database(board_payloads, users=None):
         aggregated_users.update(formatted.get("users", {}))
 
     if not formatted_payloads:
-        return {"boards": {}, "userCount": len(aggregated_users)}
+        return {"boards": {}, "userCount": len(aggregated_users), "lastSyncedAt": None}
+
+    persisted_sync_time = synced_at or datetime.now(timezone.utc)
 
     with get_connection() as conn:
         try:
@@ -329,6 +365,7 @@ def sync_monday_database(board_payloads, users=None):
             _store_users(conn, aggregated_users)
             for board_key, payload in formatted_payloads.items():
                 _store_board_data(conn, board_key, payload)
+            _store_sync_state(conn, persisted_sync_time)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -342,6 +379,7 @@ def sync_monday_database(board_payloads, users=None):
             for board_key, payload in formatted_payloads.items()
         },
         "userCount": len(aggregated_users),
+        "lastSyncedAt": persisted_sync_time.isoformat(),
     }
 
 

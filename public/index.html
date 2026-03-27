@@ -68,6 +68,25 @@
         return { startDate: toIsoDate(start), endDate: toIsoDate(end) };
       };
 
+      const formatLastSyncLabel = (isoTimestamp) => {
+        if (!isoTimestamp) {
+          return 'Last sync with monday.com at: unavailable';
+        }
+
+        const parsed = new Date(isoTimestamp);
+        if (Number.isNaN(parsed.getTime())) {
+          return `Last sync with monday.com at: ${isoTimestamp}`;
+        }
+
+        return `Last sync with monday.com at: ${parsed.toLocaleString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        })}`;
+      };
+
       const usePeriodReport = (startDate, endDate) => {
         const [state, setState] = useState({
           data: null,
@@ -470,6 +489,7 @@
         const [downloadError, setDownloadError] = useState(null);
         const [isDownloading, setIsDownloading] = useState(false);
         const reportState = usePeriodReport(startDate, endDate);
+        const lastSyncLabel = formatLastSyncLabel(reportState.data?.lastSyncedAt);
 
         useEffect(() => {
           setDownloadError(null);
@@ -522,6 +542,7 @@
                 <h1 className="font-display text-3xl leading-tight text-fog sm:text-4xl lg:text-5xl">
                   Post Production Data
                 </h1>
+                <p className="text-sm text-white/55">{lastSyncLabel}</p>
               </header>
 
               <section className="grid gap-6">
