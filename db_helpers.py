@@ -80,6 +80,14 @@ def _prepare_column_blob(column_values):
     return prepared
 
 
+def _column_blob_to_list(column_blob):
+    if isinstance(column_blob, dict):
+        return list(column_blob.values())
+    if isinstance(column_blob, list):
+        return column_blob
+    return []
+
+
 def _extract_users(raw_users):
     users = {}
     for user in raw_users or []:
@@ -264,3 +272,87 @@ def sync_monday_database(board_payloads, users=None):
         except Exception:
             conn.rollback()
             raise
+
+
+def _fetch_table(conn, table_name):
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {table_name};")
+        columns = [desc[0] for desc in cur.description]
+        rows = []
+        for raw in cur.fetchall():
+            rows.append(dict(zip(columns, raw)))
+    return rows
+
+
+def _load_users(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT user_id, username FROM monday_users;")
+        rows = cur.fetchall()
+    return {str(row[0]): row[1] for row in rows}
+
+
+def _build_user_payload(users_map):
+    return [{"id": uid, "name": name} for uid, name in users_map.items()]
+
+
+def _build_graphql_payload(items, subitems, user_payload):
+    subitems_by_parent = {}
+    for subitem in subitems or []:
+        parent_id = subitem.get("parent_item_id")
+        if parent_id is None:
+            continue
+        subitems_by_parent.setdefault(parent_id, []).append(
+            {
+                "id": str(subitem.get("subitem_id")),
+                "name": subitem.get("name"),
+                "column_values": _column_blob_to_list(subitem.get("column_values")),
+            }
+        )
+
+    graphql_items = []
+    for item in items or []:
+        item_id = item.get("item_id")
+        graphql_items.append(
+            {
+                "id": str(item_id),
+                "name": item.get("name"),
+                "column_values": _column_blob_to_list(item.get("column_values")),
+                "subitems": subitems_by_parent.get(item_id, []),
+            }
+        )
+
+    return {
+        "data": {
+            "users": user_payload,
+            "boards": [
+                {
+                    "items_page": {
+                        "items": graphql_items,
+                        "cursor": None,
+                    }
+                }
+            ],
+        }
+    }
+
+
+def load_board_payloads_from_database(board_keys=None):
+    """
+    Build GraphQL-style payloads from the stored database snapshot.
+    Returns (users_map, {board_key: payload})
+    """
+    board_keys = board_keys or BOARD_TABLES.keys()
+    with get_connection() as conn:
+        users_map = _load_users(conn)
+        user_payload = _build_user_payload(users_map)
+        payloads = {}
+        for board_key in board_keys:
+            tables = BOARD_TABLES.get(board_key)
+            if not tables:
+                continue
+            items = _fetch_table(conn, tables["items"])
+            subitems = _fetch_table(conn, tables["subitems"])
+            if not items and not subitems:
+                continue
+            payloads[board_key] = _build_graphql_payload(items, subitems, user_payload)
+    return users_map, payloads

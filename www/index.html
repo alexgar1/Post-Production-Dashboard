@@ -1,457 +1,551 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Ops Dashboard</title>
-    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body class="bg-slate-950 text-slate-100">
-<div id="app" class="min-h-screen"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Post Production Views</title>
+    <!-- Using Aktiv Grotesk (expecting it to be available in the environment); falls back to system sans. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              display: ['Aktiv Grotesk', 'sans-serif'],
+              body: ['Aktiv Grotesk', 'sans-serif'],
+            },
+            colors: {
+              charcoal: '#050505',
+              graphite: '#101010',
+              fog: '#f1f1f1',
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-black font-body text-white antialiased">
+    <div id="root"></div>
 
-<script type="text/babel">
-const { useEffect, useState } = React;
+    <script type="text/babel">
+      const { useEffect, useState } = React;
 
-const STATUS_ENDPOINT = "/api/status";
-const LISTINGS_ENDPOINT = "/api/listings";
-const SOCIAL_ENDPOINT = "/api/social";
+      const MS_PER_DAY = 24 * 60 * 60 * 1000;
+      const PAY_PERIOD_LENGTH_DAYS = 14;
+      const PAY_PERIOD_ANCHOR = { year: 2025, month: 12, day: 27 }; // 12/27/25-1/9/26
 
-const Section = ({ title, children, actions }) => (
-    <section className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-lg">
-        <header className="flex flex-wrap items-center justify-between gap-4">
-            <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
-            {actions}
-        </header>
-        <div>{children}</div>
-    </section>
-);
+      const toIsoDate = (date) => {
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
 
-const Badge = ({ children, variant = "default" }) => {
-    const colors = {
-        default: "bg-emerald-400/10 text-emerald-300 border border-emerald-400/30",
-        error: "bg-rose-500/10 text-rose-300 border border-rose-500/30",
-        warning: "bg-amber-500/10 text-amber-200 border border-amber-500/30",
-    };
-    return (
-        <span className={`px-3 py-1 text-xs font-semibold tracking-wide rounded-full ${colors[variant]}`}>
-            {children}
-        </span>
-    );
-};
+      const toUtcDateFromLocal = (date) =>
+        new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
 
-const StatusPanel = () => {
-    const [status, setStatus] = useState(null);
-    const [error, setError] = useState(null);
-    const [loading, setLoading] = useState(true);
+      const addUtcDays = (date, days) => {
+        const copy = new Date(date.getTime());
+        copy.setUTCDate(copy.getUTCDate() + days);
+        return copy;
+      };
 
-    const loadStatus = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const response = await fetch(STATUS_ENDPOINT);
-            if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-            const payload = await response.json();
-            setStatus(payload);
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
+      const getLastCompletedPayPeriodRange = (todayLocal = new Date()) => {
+        const anchor = new Date(
+          Date.UTC(PAY_PERIOD_ANCHOR.year, PAY_PERIOD_ANCHOR.month - 1, PAY_PERIOD_ANCHOR.day)
+        );
+        const today = toUtcDateFromLocal(todayLocal);
+        const daysSinceAnchor = Math.floor((today.getTime() - anchor.getTime()) / MS_PER_DAY);
+        const safeDaysSince = Math.max(0, daysSinceAnchor);
+        const currentIndex = Math.floor(safeDaysSince / PAY_PERIOD_LENGTH_DAYS);
+        const lastIndex = Math.max(0, currentIndex - 1);
+        const start = addUtcDays(anchor, lastIndex * PAY_PERIOD_LENGTH_DAYS);
+        const end = addUtcDays(start, PAY_PERIOD_LENGTH_DAYS - 1);
+        return { startDate: toIsoDate(start), endDate: toIsoDate(end) };
+      };
 
-    useEffect(() => {
-        loadStatus();
-    }, []);
+      const usePeriodReport = (startDate, endDate) => {
+        const [state, setState] = useState({
+          data: null,
+          isLoading: false,
+          error: null,
+        });
 
-    return (
-        <Section
-            title="Backend · PostgreSQL"
-            actions={
-                <button
-                    onClick={loadStatus}
-                    className="px-3 py-2 text-sm font-medium bg-slate-50 text-slate-900 rounded-lg hover:bg-white/80 transition"
-                >
-                    Refresh
-                </button>
-            }
-        >
-            {loading && <p className="text-slate-400 text-sm">Checking Flask server…</p>}
-            {error && (
-                <p className="text-sm text-rose-300">
-                    Could not reach backend ({error}). Make sure Flask is running on port 5000.
-                </p>
-            )}
-            {status && (
-                <dl className="grid gap-4 text-sm">
-                    <div>
-                        <dt className="text-slate-400 uppercase tracking-wide text-xs">App</dt>
-                        <dd className="text-base font-semibold flex items-center gap-2">
-                            {status.app}
-                            <Badge>{status.version ?? "v1"}</Badge>
-                        </dd>
-                    </div>
-                    <div>
-                        <dt className="text-slate-400 uppercase tracking-wide text-xs">Database</dt>
-                        <dd className="flex items-center gap-3">
-                            {status.database?.connected ? (
-                                <>
-                                    <Badge>Connected</Badge>
-                                    <span className="text-slate-300">
-                                        {status.database.database} · {status.database.user}
-                                    </span>
-                                </>
-                            ) : (
-                                <>
-                                    <Badge variant="error">Offline</Badge>
-                                    <span className="text-slate-300">{status.database?.error ?? "unknown error"}</span>
-                                </>
-                            )}
-                        </dd>
-                    </div>
-                    {status.database?.server_time && (
-                        <div>
-                            <dt className="text-slate-400 uppercase tracking-wide text-xs">Server time</dt>
-                            <dd>{new Date(status.database.server_time).toLocaleString()}</dd>
-                        </div>
-                    )}
-                </dl>
-            )}
-        </Section>
-    );
-};
-
-const ListingForm = ({ onSuccess }) => {
-    const [title, setTitle] = useState("");
-    const [price, setPrice] = useState("");
-    const [status, setStatus] = useState("draft");
-    const [saving, setSaving] = useState(false);
-    const [error, setError] = useState(null);
-
-    const submitListing = async (event) => {
-        event.preventDefault();
-        setSaving(true);
-        setError(null);
-        try {
-            const response = await fetch(LISTINGS_ENDPOINT, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ title, price, status }),
+        useEffect(() => {
+          if (!startDate || !endDate) {
+            setState({
+              data: null,
+              isLoading: false,
+              error: 'Select a start and end date.',
             });
-            if (!response.ok) {
-                const payload = await response.json();
-                throw new Error(payload.error ?? `Request failed (${response.status})`);
-            }
-            setTitle("");
-            setPrice("");
-            setStatus("draft");
-            onSuccess?.();
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setSaving(false);
-        }
-    };
+            return;
+          }
 
-    return (
-        <form className="space-y-4" onSubmit={submitListing}>
-            <div>
-                <label className="text-sm font-medium text-slate-300 block mb-2" htmlFor="title">
-                    Listing title
-                </label>
-                <input
-                    id="title"
-                    name="title"
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                    className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
-                    placeholder="New York Loft"
-                    required
-                />
-            </div>
-            <div className="flex gap-4 flex-col sm:flex-row">
-                <div className="flex-1">
-                    <label className="text-sm font-medium text-slate-300 block mb-2" htmlFor="price">
-                        Price (USD)
-                    </label>
-                    <input
-                        id="price"
-                        name="price"
-                        type="number"
-                        step="0.01"
-                        value={price}
-                        onChange={(event) => setPrice(event.target.value)}
-                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
-                        placeholder="450000"
-                        required
-                    />
-                </div>
-                <div className="flex-1">
-                    <label className="text-sm font-medium text-slate-300 block mb-2" htmlFor="status">
-                        Status
-                    </label>
-                    <select
-                        id="status"
-                        name="status"
-                        value={status}
-                        onChange={(event) => setStatus(event.target.value)}
-                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
-                    >
-                        <option value="draft">Draft</option>
-                        <option value="ready">Ready</option>
-                        <option value="published">Published</option>
-                    </select>
-                </div>
-            </div>
-            {error && <p className="text-sm text-rose-300">{error}</p>}
-            <button
-                type="submit"
-                disabled={saving}
-                className="w-full py-3 rounded-xl text-center font-semibold bg-emerald-400 text-slate-950 hover:bg-emerald-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-                {saving ? "Saving…" : "Add listing"}
-            </button>
-        </form>
-    );
-};
-
-const ListingList = ({ listings, loading, onRefresh, error }) => (
-    <Section
-        title="Listings"
-        actions={
-            <button
-                onClick={onRefresh}
-                className="text-sm font-medium text-slate-300 px-3 py-2 rounded-lg border border-slate-800 hover:border-slate-600 transition"
-            >
-                Refresh
-            </button>
-        }
-    >
-        {loading && <p className="text-sm text-slate-400">Loading listings…</p>}
-        {error && <p className="text-sm text-rose-300">{error}</p>}
-        {!loading && !error && listings.length === 0 && (
-            <p className="text-sm text-slate-400">No listings captured yet.</p>
-        )}
-        <ul className="space-y-4">
-            {listings.map((listing) => (
-                <li key={listing.id} className="bg-slate-950/40 border border-slate-900 rounded-xl px-4 py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-base font-semibold">{listing.title}</p>
-                        <Badge variant={listing.status === "published" ? "default" : listing.status === "ready" ? "warning" : "error"}>
-                            {listing.status}
-                        </Badge>
-                    </div>
-                    <p className="text-sm text-slate-400 mt-1">
-                        {listing.price !== null ? `$${listing.price.toLocaleString()}` : "—"}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-2">
-                        {listing.created_at ? new Date(listing.created_at).toLocaleString() : "—"}
-                    </p>
-                </li>
-            ))}
-        </ul>
-    </Section>
-);
-
-const SocialPanel = () => {
-    const [entries, setEntries] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
-    const [platform, setPlatform] = useState("");
-    const [impressions, setImpressions] = useState("");
-    const [engagementRate, setEngagementRate] = useState("");
-    const [saving, setSaving] = useState(false);
-
-    const loadSocial = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const response = await fetch(SOCIAL_ENDPOINT);
-            if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-            const payload = await response.json();
-            setEntries(payload.items ?? []);
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        loadSocial();
-    }, []);
-
-    const submitSocial = async (event) => {
-        event.preventDefault();
-        setSaving(true);
-        setError(null);
-        try {
-            const response = await fetch(SOCIAL_ENDPOINT, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    platform,
-                    impressions,
-                    engagement_rate: engagementRate,
-                }),
+          const start = new Date(startDate);
+          const end = new Date(endDate);
+          if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+            setState({
+              data: null,
+              isLoading: false,
+              error: 'Invalid date selection.',
             });
+            return;
+          }
+          if (start > end) {
+            setState({
+              data: null,
+              isLoading: false,
+              error: 'Start date must be before the end date.',
+            });
+            return;
+          }
+
+          const controller = new AbortController();
+          setState({ data: null, isLoading: true, error: null });
+
+          const fetchReport = async () => {
+            try {
+              const response = await fetch(`/api/period-report?start=${startDate}&end=${endDate}`, {
+                signal: controller.signal,
+              });
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok || payload.status !== 'ok') {
+                const message = payload?.message || 'Unable to load data.';
+                throw new Error(message);
+              }
+              setState({ data: payload, isLoading: false, error: null });
+            } catch (err) {
+              if (err.name === 'AbortError') {
+                return;
+              }
+              setState({
+                data: null,
+                isLoading: false,
+                error: err.message || 'Unable to load data.',
+              });
+            }
+          };
+
+          fetchReport();
+          return () => controller.abort();
+        }, [startDate, endDate]);
+
+        return state;
+      };
+
+      const DateInput = ({ label, value, onChange, minDate, maxDate }) => {
+        const inputRef = React.useRef(null);
+
+        useEffect(() => {
+          if (!window.flatpickr || !inputRef.current) {
+            return;
+          }
+          const picker = window.flatpickr(inputRef.current, {
+            dateFormat: 'Y-m-d',
+            defaultDate: value,
+            minDate,
+            maxDate,
+            disableMobile: false,
+            onChange: (_, dateStr) => onChange(dateStr || ''),
+          });
+          return () => picker.destroy();
+        }, []);
+
+        useEffect(() => {
+          const instance = inputRef.current?._flatpickr;
+          if (!instance) {
+            return;
+          }
+          instance.setDate(value, false);
+          if (minDate !== undefined) {
+            instance.set('minDate', minDate);
+          }
+          if (maxDate !== undefined) {
+            instance.set('maxDate', maxDate);
+          }
+        }, [value, minDate, maxDate]);
+
+        return (
+          <label className="flex flex-col gap-1.5 text-xs text-white/70">
+            <span className="text-[11px] uppercase tracking-[0.3em] text-white/50">{label}</span>
+            <input
+              ref={inputRef}
+              type="text"
+              placeholder="Select date"
+              className="rounded-2xl border border-white/15 bg-white/5 px-3 py-2.5 text-sm text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none"
+            />
+          </label>
+        );
+      };
+
+      const ActivityTimeline = ({
+        state,
+        startDate,
+        endDate,
+        setStartDate,
+        setEndDate,
+        onDownload,
+        downloadError,
+        isRangeValid,
+        isDownloading,
+      }) => {
+        if (state.isLoading) {
+          return (
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-white/60">
+              Loading timeline…
+            </div>
+          );
+        }
+
+        if (state.error) {
+          return (
+            <div className="rounded-3xl border border-red-500/40 bg-red-500/10 p-6 text-sm text-red-200">
+              {state.error}
+            </div>
+          );
+        }
+
+        const summary = state.data;
+        if (!summary?.editors?.length) {
+          return (
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-white/60">
+              No time tracking found for this range.
+            </div>
+          );
+        }
+
+        const rangeStart = new Date(summary.periodStart);
+        const rangeEnd = new Date(summary.periodEnd);
+        const totalMs = rangeEnd.getTime() - rangeStart.getTime();
+        const formatDayLabel = (date) =>
+          date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+        const startLabel = formatDayLabel(rangeStart);
+        const endLabel = formatDayLabel(new Date(rangeEnd.getTime() - 1000));
+        const formatHours = (value) => {
+          const totalMinutes = Math.max(0, Number(value ?? 0)) * 60;
+          const hours = Math.floor(totalMinutes / 60);
+          const minutes = Math.round(totalMinutes % 60)
+            .toString()
+            .padStart(2, '0');
+          return `${hours}:${minutes}`;
+        };
+        const dayMarkers = [];
+        if (totalMs > 0) {
+          const cursor = new Date(rangeStart);
+          cursor.setUTCHours(0, 0, 0, 0);
+          if (cursor.getTime() < rangeStart.getTime()) {
+            cursor.setUTCDate(cursor.getUTCDate() + 1);
+          }
+          while (cursor.getTime() < rangeEnd.getTime()) {
+            const left = ((cursor.getTime() - rangeStart.getTime()) / totalMs) * 100;
+            if (left > 0 && left < 100) {
+              dayMarkers.push(left);
+            }
+            cursor.setUTCDate(cursor.getUTCDate() + 1);
+          }
+        }
+
+        const renderRow = (editor) => {
+          const mergeSegments = (segments) => {
+            if (!segments.length) return [];
+            const sorted = [...segments].sort((a, b) => a.start - b.start);
+            const merged = [sorted[0]];
+            for (let i = 1; i < sorted.length; i++) {
+              const current = sorted[i];
+              const last = merged[merged.length - 1];
+              if (current.start <= last.end) {
+                last.end = Math.max(last.end, current.end);
+              } else {
+                merged.push({ ...current });
+              }
+            }
+            return merged;
+          };
+
+          const rawSessions =
+            (editor.sessions || [])
+              .map((session) => {
+                const start = new Date(session.start);
+                const end = new Date(session.end);
+                if (
+                  Number.isNaN(start.getTime()) ||
+                  Number.isNaN(end.getTime()) ||
+                  end <= start ||
+                  totalMs <= 0
+                ) {
+                  return null;
+                }
+                const itemLabel = session.itemName || 'Unknown item';
+                const boardId = session.boardId;
+                const pulseId = session.pulseId;
+                const left = ((start.getTime() - rangeStart.getTime()) / totalMs) * 100;
+                const right = ((end.getTime() - rangeStart.getTime()) / totalMs) * 100;
+                const clampedLeft = Math.max(0, Math.min(100, left));
+                const clampedRight = Math.max(clampedLeft, Math.min(100, right));
+                const width = Math.max(clampedRight - clampedLeft, 0);
+                const sessionHours = (end.getTime() - start.getTime()) / 3600000;
+                const isLongSession = sessionHours > 8;
+                const startLabel = start.toLocaleString(undefined, {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                });
+                const endLabel = end.toLocaleString(undefined, {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                });
+                return {
+                  start,
+                  end,
+                  itemLabel,
+                  boardId,
+                  pulseId,
+                  clampedLeft,
+                  clampedRight,
+                  width,
+                  sessionHours,
+                  isLongSession,
+                  startLabel,
+                  endLabel,
+                };
+              })
+              .filter(Boolean) || [];
+
+          const sessionsWithOverlap = rawSessions.map((session, idx) => {
+            const overlapping = rawSessions.filter((other, i) => {
+              if (i === idx) return false;
+              return session.clampedLeft < other.clampedRight && session.clampedRight > other.clampedLeft;
+            });
+            const overlapSegments = overlapping.map((other) => ({
+              start: Math.max(session.clampedLeft, other.clampedLeft),
+              end: Math.min(session.clampedRight, other.clampedRight),
+            }));
+            const mergedSegments = mergeSegments(overlapSegments.filter((seg) => seg.end > seg.start));
+            const overlapTooltip =
+              overlapping.length > 0
+                ? `\nOverlaps:\n${overlapping
+                    .map((o) => `${o.itemLabel} (${o.startLabel} – ${o.endLabel})`)
+                    .join('\n')}`
+                : '';
+            const tooltip = `${session.itemLabel}\n${session.startLabel} – ${session.endLabel} (${formatHours(
+              session.sessionHours
+            )}h)${overlapTooltip}`;
+            return {
+              ...session,
+              overlaps: overlapping.length > 0,
+              overlapSegments: mergedSegments,
+              tooltip,
+            };
+          });
+
+          const sessions = sessionsWithOverlap.map((session, idx) => {
+            const handleClick = () => {
+              if (!session.boardId || !session.pulseId) return;
+              const url = `https://infiniteviewsllc.monday.com/boards/${session.boardId}/pulses/${session.pulseId}`;
+              window.open(url, '_blank', 'noopener');
+            };
+            const baseClass = session.isLongSession
+              ? 'bg-gradient-to-r from-yellow-300 via-yellow-400 to-yellow-500 opacity-70'
+              : 'bg-gradient-to-r from-blue-400 via-blue-500 to-blue-600 opacity-50';
+            const spanWidth = Math.max(session.width, 0.0001);
+            return (
+              <div
+                key={`${session.start.toISOString()}-${idx}`}
+                className="group absolute top-1/2 -translate-y-1/2"
+                style={{ left: `${session.clampedLeft}%`, width: `${session.width}%`, height: '70%' }}
+                title={session.tooltip}
+                onClick={handleClick}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleClick();
+                  }
+                }}
+              >
+                <div className="pointer-events-none absolute -top-8 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded bg-white px-2 py-1 text-[11px] font-semibold text-black shadow-lg shadow-black/30 group-hover:block">
+                  {session.itemLabel}
+                </div>
+                <div className={`h-full w-full ${baseClass} shadow-lg shadow-black/30`}></div>
+                {session.overlaps &&
+                  session.overlapSegments.map((seg, segIdx) => (
+                    <div
+                      key={`${session.start.toISOString()}-overlap-${segIdx}`}
+                      className="absolute inset-y-0 bg-gradient-to-r from-red-500 via-red-600 to-red-700 opacity-100"
+                      style={{
+                        left: `${((seg.start - session.clampedLeft) / spanWidth) * 100}%`,
+                        width: `${((seg.end - seg.start) / spanWidth) * 100}%`,
+                      }}
+                    ></div>
+                  ))}
+              </div>
+            );
+          });
+
+          return (
+            <div key={editor.userId} className="grid grid-cols-[140px_1fr_80px] items-center gap-3">
+              <p className="truncate text-sm text-white/80">{editor.name}</p>
+              <div className="relative h-8 overflow-visible border border-white/5 bg-white/5">
+                <div className="pointer-events-none absolute inset-0">
+                  {dayMarkers.map((left, idx) => (
+                    <div
+                      key={`${editor.userId}-day-${idx}`}
+                      className="absolute inset-y-0 w-px bg-white/15"
+                      style={{ left: `${left}%` }}
+                    ></div>
+                  ))}
+                </div>
+                <div className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-white/10"></div>
+                {sessions}
+              </div>
+              <p className="text-right text-sm font-medium text-white/80">{formatHours(editor.hours)}h</p>
+            </div>
+          );
+        };
+
+        return (
+          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl shadow-black/40">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-xl text-fog">Time Tracking Activity</h2>
+              </div>
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-[repeat(2,minmax(0,1fr))_auto] md:items-end md:gap-4">
+              <DateInput label="Start date" value={startDate} onChange={setStartDate} maxDate={endDate} />
+              <DateInput label="End date" value={endDate} onChange={setEndDate} minDate={startDate} />
+              <button
+                type="button"
+                onClick={onDownload}
+                disabled={!isRangeValid || isDownloading}
+                className="h-10 min-w-[150px] rounded-2xl border border-white/20 bg-white/10 px-4 text-xs font-medium uppercase tracking-tight text-white transition hover:border-white/40 hover:bg-white/15 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-white/40 md:justify-self-end"
+              >
+                {isDownloading ? 'Preparing…' : 'Download Report'}
+              </button>
+            </div>
+            {downloadError && (
+              <p className="mt-3 text-xs text-red-300">{downloadError}</p>
+            )}
+            <div className="mt-6 border-t border-white/10"></div>
+            <div className="mt-5 overflow-x-auto">
+              <div className="min-w-[720px] space-y-4">
+                <div className="grid grid-cols-[140px_1fr_80px] items-center text-[10px] uppercase tracking-[0.3em] text-white/50">
+                  <span></span>
+                  <div className="flex items-center justify-between">
+                    <span>{startLabel}</span>
+                    <span>{endLabel}</span>
+                  </div>
+                  <span className="text-right">Total</span>
+                </div>
+                {summary.editors.map((editor) => renderRow(editor))}
+              </div>
+            </div>
+            <div className="mt-6 flex flex-wrap items-center gap-4 text-[11px] uppercase tracking-[0.2em] text-white/50">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-blue-500"></span>
+                <span>Normal</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-600"></span>
+                <span>Overlap</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-yellow-400"></span>
+                <span>8+ Hours Consecutive</span>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const App = () => {
+        const defaultRange = React.useMemo(() => getLastCompletedPayPeriodRange(), []);
+        const [startDate, setStartDate] = useState(defaultRange.startDate);
+        const [endDate, setEndDate] = useState(defaultRange.endDate);
+        const [downloadError, setDownloadError] = useState(null);
+        const [isDownloading, setIsDownloading] = useState(false);
+        const reportState = usePeriodReport(startDate, endDate);
+
+        useEffect(() => {
+          setDownloadError(null);
+        }, [startDate, endDate]);
+
+        const isRangeValid =
+          startDate &&
+          endDate &&
+          !Number.isNaN(new Date(startDate).getTime()) &&
+          !Number.isNaN(new Date(endDate).getTime()) &&
+          new Date(startDate) <= new Date(endDate);
+
+        const handleDownload = async () => {
+          if (!isRangeValid || !startDate || !endDate) {
+            setDownloadError('Choose a valid date range before downloading.');
+            return;
+          }
+          setIsDownloading(true);
+          setDownloadError(null);
+          try {
+            const response = await fetch(
+              `/api/period-report?start=${startDate}&end=${endDate}&format=csv`
+            );
             if (!response.ok) {
-                const payload = await response.json();
-                throw new Error(payload.error ?? `Request failed (${response.status})`);
+              const payload = await response.json().catch(() => ({}));
+              const message = payload?.message || 'Unable to prepare CSV.';
+              throw new Error(message);
             }
-            setPlatform("");
-            setImpressions("");
-            setEngagementRate("");
-            loadSocial();
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setSaving(false);
-        }
-    };
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `period_report_${startDate}_to_${endDate}.csv`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+          } catch (err) {
+            setDownloadError(err.message || 'Unable to prepare CSV.');
+          } finally {
+            setIsDownloading(false);
+          }
+        };
 
-    return (
-        <Section
-            title="Social performance"
-            actions={
-                <button
-                    onClick={loadSocial}
-                    className="text-sm font-medium text-slate-300 px-3 py-2 rounded-lg border border-slate-800 hover:border-slate-600 transition"
-                >
-                    Refresh
-                </button>
-            }
-        >
-            {loading && <p className="text-sm text-slate-400">Loading social metrics…</p>}
-            {error && <p className="text-sm text-rose-300">{error}</p>}
-            <ul className="space-y-3 mb-6">
-                {entries.map((entry) => (
-                    <li key={entry.id} className="bg-slate-950/40 border border-slate-900 rounded-xl px-4 py-3">
-                        <div className="flex items-center justify-between">
-                            <p className="font-semibold">{entry.platform}</p>
-                            <p className="text-sm text-slate-400">
-                                {entry.recorded_at ? new Date(entry.recorded_at).toLocaleString() : "—"}
-                            </p>
-                        </div>
-                        <p className="text-sm text-slate-300 mt-1">
-                            {entry.impressions.toLocaleString()} impressions ·{" "}
-                            {entry.engagement_rate !== null ? `${entry.engagement_rate}% engagement` : "n/a"}
-                        </p>
-                    </li>
-                ))}
-                {!loading && entries.length === 0 && (
-                    <p className="text-sm text-slate-400">No social updates yet.</p>
-                )}
-            </ul>
-            <form className="space-y-3" onSubmit={submitSocial}>
-                <div>
-                    <label className="text-sm font-medium text-slate-300 block mb-1" htmlFor="platform">
-                        Platform
-                    </label>
-                    <input
-                        id="platform"
-                        value={platform}
-                        onChange={(event) => setPlatform(event.target.value)}
-                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
-                        placeholder="LinkedIn"
-                        required
-                    />
-                </div>
-                <div>
-                    <label className="text-sm font-medium text-slate-300 block mb-1" htmlFor="impressions">
-                        Impressions
-                    </label>
-                    <input
-                        id="impressions"
-                        type="number"
-                        min="0"
-                        value={impressions}
-                        onChange={(event) => setImpressions(event.target.value)}
-                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
-                        placeholder="12400"
-                        required
-                    />
-                </div>
-                <div>
-                    <label className="text-sm font-medium text-slate-300 block mb-1" htmlFor="engagement">
-                        Engagement rate (%)
-                    </label>
-                    <input
-                        id="engagement"
-                        type="number"
-                        step="0.01"
-                        value={engagementRate}
-                        onChange={(event) => setEngagementRate(event.target.value)}
-                        className="w-full bg-slate-950/60 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400/60"
-                        placeholder="3.8"
-                    />
-                </div>
-                <button
-                    type="submit"
-                    disabled={saving}
-                    className="w-full py-3 rounded-xl text-center font-semibold bg-indigo-400 text-slate-950 hover:bg-indigo-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                    {saving ? "Saving…" : "Log social metric"}
-                </button>
-            </form>
-        </Section>
-    );
-};
-
-const Dashboard = () => {
-    const [listings, setListings] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
-
-    const loadListings = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const response = await fetch(LISTINGS_ENDPOINT);
-            if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-            const payload = await response.json();
-            setListings(payload.items ?? []);
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        loadListings();
-    }, []);
-
-    return (
-        <main className="max-w-6xl mx-auto px-6 py-12 space-y-10">
-            <header className="space-y-3">
-                <p className="uppercase text-xs font-semibold tracking-[0.3em] text-emerald-300">React + Tailwind</p>
-                <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight">
-                    Operations control panel
+        return (
+          <div className="min-h-screen bg-black text-white">
+            <div className="mx-auto flex max-w-6xl flex-col gap-16 px-6 py-16 sm:px-10 lg:px-12">
+              <header className="space-y-6">
+                <p className="text-xs uppercase tracking-[0.4em] text-white/50">Infinite Views</p>
+                <h1 className="font-display text-3xl leading-tight text-fog sm:text-4xl lg:text-5xl">
+                  Post Production Data
                 </h1>
-                <p className="text-base text-slate-400">
-                    This UI is rendered with React 18, styled with Tailwind via CDN, and talks to the Flask API backed by PostgreSQL.
-                </p>
-            </header>
-            <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-                <div className="space-y-6">
-                    <StatusPanel />
-                    <ListingList listings={listings} loading={loading} error={error} onRefresh={loadListings} />
-                </div>
-                <div className="space-y-6">
-                    <Section title="Add listing">
-                        <ListingForm onSuccess={loadListings} />
-                    </Section>
-                    <SocialPanel />
-                </div>
-            </div>
-        </main>
-    );
-};
+              </header>
 
-ReactDOM.createRoot(document.getElementById("app")).render(<Dashboard />);
-</script>
-</body>
+              <section className="grid gap-6">
+                <ActivityTimeline
+                  state={reportState}
+                  startDate={startDate}
+                  endDate={endDate}
+                  setStartDate={setStartDate}
+                  setEndDate={setEndDate}
+                  onDownload={handleDownload}
+                  downloadError={downloadError}
+                  isRangeValid={isRangeValid}
+                  isDownloading={isDownloading}
+                />
+              </section>
+            </div>
+          </div>
+        );
+      };
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
 </html>

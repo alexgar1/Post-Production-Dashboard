@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS monday_users (
     user_id BIGINT PRIMARY KEY,
-    username TEXT NOT NULL
+    username TEXT NOT NULL,
+    pay_rate NUMERIC(6, 2)
 );
 
 CREATE TABLE IF NOT EXISTS listing_items (
