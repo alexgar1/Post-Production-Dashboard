@@ -4,7 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Post Production Views</title>
-    <!-- Using Aktiv Grotesk (expecting it to be available in the environment); falls back to system sans. -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
     <script>
@@ -37,7 +36,7 @@
 
       const MS_PER_DAY = 24 * 60 * 60 * 1000;
       const PAY_PERIOD_LENGTH_DAYS = 14;
-      const PAY_PERIOD_ANCHOR = { year: 2025, month: 12, day: 27 }; // 12/27/25-1/9/26
+      const PAY_PERIOD_ANCHOR = { year: 2025, month: 12, day: 27 };
 
       const toIsoDate = (date) => {
         const year = date.getUTCFullYear();
@@ -431,9 +430,7 @@
                 {isDownloading ? 'Preparing…' : 'Download Report'}
               </button>
             </div>
-            {downloadError && (
-              <p className="mt-3 text-xs text-red-300">{downloadError}</p>
-            )}
+            {downloadError && <p className="mt-3 text-xs text-red-300">{downloadError}</p>}
             <div className="mt-6 border-t border-white/10"></div>
             <div className="mt-5 overflow-x-auto">
               <div className="min-w-[720px] space-y-4">

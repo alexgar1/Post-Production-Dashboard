@@ -1,5 +1,6 @@
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 try:
     import psycopg2
@@ -8,14 +9,17 @@ except ImportError:  # pragma: no cover
     psycopg2 = None
     Json = None
 
-
-DB_SETTINGS = {
+DEFAULT_DB_SETTINGS = {
     "dbname": os.getenv("MONDAY_DB_NAME", "monday_reports"),
     "user": os.getenv("MONDAY_DB_USER", "postgres"),
     "password": os.getenv("MONDAY_DB_PASSWORD", "postgres"),
     "host": os.getenv("MONDAY_DB_HOST", "127.0.0.1"),
     "port": os.getenv("MONDAY_DB_PORT", "5432"),
 }
+
+DATABASE_URL_ENV = "DATABASE_URL"
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+_SCHEMA_SQL = None
 
 BOARD_TABLES = {
     "listing": {
@@ -41,21 +45,54 @@ def _ensure_driver():
         )
 
 
+def _load_schema_sql():
+    global _SCHEMA_SQL
+    if _SCHEMA_SQL is None:
+        _SCHEMA_SQL = SCHEMA_PATH.read_text(encoding="utf-8")
+    return _SCHEMA_SQL
+
+
+def _open_connection():
+    _ensure_driver()
+    database_url = os.getenv(DATABASE_URL_ENV)
+    if database_url:
+        return psycopg2.connect(database_url)
+
+    connect_kwargs = dict(DEFAULT_DB_SETTINGS)
+    sslmode = os.getenv("MONDAY_DB_SSLMODE")
+    if sslmode:
+        connect_kwargs["sslmode"] = sslmode
+    return psycopg2.connect(**connect_kwargs)
+
+
 @contextmanager
 def get_connection():
     """Yield a Postgres connection using the configured settings."""
-    _ensure_driver()
-    conn = psycopg2.connect(
-        dbname=DB_SETTINGS["dbname"],
-        user=DB_SETTINGS["user"],
-        password=DB_SETTINGS["password"],
-        host=DB_SETTINGS["host"],
-        port=DB_SETTINGS["port"],
-    )
+    conn = _open_connection()
     try:
         yield conn
     finally:
         conn.close()
+
+
+def ensure_schema(conn=None):
+    """
+    Apply the schema with CREATE TABLE IF NOT EXISTS statements.
+
+    This keeps first-run deployments on Vercel from failing before a manual
+    migration step has been executed.
+    """
+    close_after = conn is None
+    active_conn = conn or _open_connection()
+    prior_autocommit = active_conn.autocommit
+    try:
+        active_conn.autocommit = True
+        with active_conn.cursor() as cur:
+            cur.execute(_load_schema_sql())
+    finally:
+        active_conn.autocommit = prior_autocommit
+        if close_after:
+            active_conn.close()
 
 
 def _safe_int(value):
@@ -180,6 +217,18 @@ def _store_board_data(conn, board_key, formatted_payload):
         raise ValueError(f"Unsupported board key '{board_key}'.")
     _persist_items(conn, tables["items"], formatted_payload.get("items"))
     _persist_subitems(conn, tables["subitems"], formatted_payload.get("subitems"))
+    _delete_missing_rows(
+        conn,
+        tables["subitems"],
+        "subitem_id",
+        [subitem["subitem_id"] for subitem in formatted_payload.get("subitems") or []],
+    )
+    _delete_missing_rows(
+        conn,
+        tables["items"],
+        "item_id",
+        [item["item_id"] for item in formatted_payload.get("items") or []],
+    )
 
 
 def _persist_items(conn, table_name, items):
@@ -236,6 +285,17 @@ def _persist_subitems(conn, table_name, subitems):
         )
 
 
+def _delete_missing_rows(conn, table_name, id_column, current_ids):
+    with conn.cursor() as cur:
+        if current_ids:
+            cur.execute(
+                f"DELETE FROM {table_name} WHERE NOT ({id_column} = ANY(%s));",
+                (current_ids,),
+            )
+            return
+        cur.execute(f"DELETE FROM {table_name};")
+
+
 def sync_monday_database(board_payloads, users=None):
     """
     Persist Monday data into Postgres.
@@ -247,7 +307,7 @@ def sync_monday_database(board_payloads, users=None):
     }
     """
     if not board_payloads:
-        return
+        return {"boards": {}, "userCount": len(users or {})}
 
     formatted_payloads = {}
     aggregated_users = dict(users or {})
@@ -261,10 +321,11 @@ def sync_monday_database(board_payloads, users=None):
         aggregated_users.update(formatted.get("users", {}))
 
     if not formatted_payloads:
-        return
+        return {"boards": {}, "userCount": len(aggregated_users)}
 
     with get_connection() as conn:
         try:
+            ensure_schema(conn)
             _store_users(conn, aggregated_users)
             for board_key, payload in formatted_payloads.items():
                 _store_board_data(conn, board_key, payload)
@@ -272,6 +333,16 @@ def sync_monday_database(board_payloads, users=None):
         except Exception:
             conn.rollback()
             raise
+    return {
+        "boards": {
+            board_key: {
+                "itemCount": len(payload.get("items") or []),
+                "subitemCount": len(payload.get("subitems") or []),
+            }
+            for board_key, payload in formatted_payloads.items()
+        },
+        "userCount": len(aggregated_users),
+    }
 
 
 def _fetch_table(conn, table_name):
@@ -343,6 +414,7 @@ def load_board_payloads_from_database(board_keys=None):
     """
     board_keys = board_keys or BOARD_TABLES.keys()
     with get_connection() as conn:
+        ensure_schema(conn)
         users_map = _load_users(conn)
         user_payload = _build_user_payload(users_map)
         payloads = {}

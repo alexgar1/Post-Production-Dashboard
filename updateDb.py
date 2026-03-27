@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import requests
 import sys
@@ -9,6 +11,10 @@ MONDAY_API_KEY_ENV = "MONDAY_API_KEY"
 
 # monday.com GraphQL endpoint
 API_URL = "https://api.monday.com/v2"
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("MONDAY_API_TIMEOUT_SECONDS", "30"))
+
+SOCIAL_BOARD_ENV = "MONDAY_SOCIAL_BOARD_ID"
+LISTING_BOARD_ENV = "MONDAY_LISTING_BOARD_ID"
 
 _cached_headers = None
 
@@ -32,14 +38,17 @@ def get_api_headers():
         }
     return _cached_headers
 
-# Target board ID
-SOCIAL_BOARD = "18164845624"
-LISTING_BOARD = "6786034822"
+def get_social_board_id():
+    return os.getenv(SOCIAL_BOARD_ENV, "18164845624")
+
+
+def get_listing_board_id():
+    return os.getenv(LISTING_BOARD_ENV, "6786034822")
 
 # GraphQL query template to get all items with subitems and time tracking for a board
 
 
-QUERY= """
+QUERY = """
 query {
     users {
         id
@@ -89,6 +98,17 @@ query {
 }
 """
 
+
+def _parse_monday_response(response):
+    response.raise_for_status()
+    data = response.json()
+    errors = data.get("errors") or []
+    if errors:
+        messages = "; ".join(error.get("message", "unknown_error") for error in errors)
+        raise RuntimeError(f"monday_api_error: {messages}")
+    return data
+
+
 def get_all_items(board_id, query_template):
     """Fetch every page of items for the given board."""
     aggregated_items = []
@@ -103,15 +123,18 @@ def get_all_items(board_id, query_template):
             API_URL,
             headers=get_api_headers(),
             json={"query": query},
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
-        response.raise_for_status()
-        data = response.json()
-
+        data = _parse_monday_response(response)
 
         if stored_users is None:
             stored_users = data.get("data", {}).get("users", []) or []
 
-        board = (data.get("data", {}).get("boards") or [{}])[0]
+        boards = data.get("data", {}).get("boards") or []
+        if not boards:
+            raise RuntimeError(f"monday_board_not_found: {board_id}")
+
+        board = boards[0]
         page = board.get("items_page", {}) or {}
         items = page.get("items", []) or []
 
@@ -146,17 +169,32 @@ def get_all_items(board_id, query_template):
 
 def sync_from_monday():
     """Fetch listing/social boards from monday.com and persist them to Postgres."""
+    listing_board_id = get_listing_board_id()
+    social_board_id = get_social_board_id()
     print("Fetching latest board data from monday.com...")
-    listing_data = get_all_items(LISTING_BOARD, QUERY)
-    social_data = get_all_items(SOCIAL_BOARD, QUERY)
+    listing_data = get_all_items(listing_board_id, QUERY)
+    social_data = get_all_items(social_board_id, QUERY)
 
-    sync_monday_database(
+    sync_summary = sync_monday_database(
         {
-            "listing": {"board_id": LISTING_BOARD, "data": listing_data},
-            "social": {"board_id": SOCIAL_BOARD, "data": social_data},
+            "listing": {"board_id": listing_board_id, "data": listing_data},
+            "social": {"board_id": social_board_id, "data": social_data},
         }
     )
     print("Synced Monday data into Postgres.")
+    return {
+        **sync_summary,
+        "boards": {
+            "listing": {
+                **sync_summary["boards"].get("listing", {}),
+                "boardId": listing_board_id,
+            },
+            "social": {
+                **sync_summary["boards"].get("social", {}),
+                "boardId": social_board_id,
+            },
+        },
+    }
 
 
 def main():
@@ -166,10 +204,11 @@ def main():
         return 1
 
     try:
-        sync_from_monday()
+        summary = sync_from_monday()
     except Exception as exc:
         print(f"Error: Failed to sync Monday data to Postgres: {exc}")
         return 1
+    print(summary)
     return 0
 
 if __name__ == "__main__":

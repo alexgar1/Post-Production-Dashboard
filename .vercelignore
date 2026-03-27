@@ -1,8 +1,8 @@
-postprod.env
-.vercel/
+.git/
 .venv/
 __pycache__/
 logs/
+nginx/
+scripts/
+www/
 *.pyc
-
-.ssh/

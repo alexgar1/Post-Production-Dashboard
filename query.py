@@ -7,7 +7,7 @@ import io
 import csv
 from typing import Dict, Iterable, List, Mapping, Tuple
 
-from db_helpers import DatabaseDriverMissing, get_connection
+from db_helpers import DatabaseDriverMissing, ensure_schema, get_connection
 
 TIME_TRACKING_TABLES = (
     "listing_items",
@@ -65,16 +65,15 @@ def _build_day_sequence(
     return day_starts, day_labels
 
 
-def _load_user_map() -> Dict[str, Dict[str, object]]:
+def _load_user_map(conn) -> Dict[str, Dict[str, object]]:
     """Return a map of user_id -> user info from the database."""
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT user_id::text, username, pay_rate FROM monday_users;")
-            rows = cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute("SELECT user_id::text, username, pay_rate FROM monday_users;")
+        rows = cur.fetchall()
     return {row[0]: {"name": row[1], "pay_rate": row[2]} for row in rows}
 
 
-def _query_time_tracking_user_ids() -> List[str]:
+def _query_time_tracking_user_ids(conn) -> List[str]:
     """Return user ids that have at least one completed time tracking session."""
     columns_union = " UNION ALL ".join(f"SELECT column_values FROM {table}" for table in TIME_TRACKING_TABLES)
     sql = f"""
@@ -94,17 +93,18 @@ def _query_time_tracking_user_ids() -> List[str]:
         FROM sessions
         WHERE user_id IS NOT NULL;
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
     return [row[0] for row in rows]
 
 
 def list_editors_with_sessions() -> List[Dict[str, str]]:
     """Return editors that have logged time tracking at least once."""
-    user_ids = _query_time_tracking_user_ids()
-    users_map = _load_user_map()
+    with get_connection() as conn:
+        ensure_schema(conn)
+        user_ids = _query_time_tracking_user_ids(conn)
+        users_map = _load_user_map(conn)
     editors: List[Dict[str, str]] = []
     for raw_id in user_ids:
         if raw_id is None or str(raw_id) == EXCLUDED_USER_ID:
@@ -117,7 +117,7 @@ def list_editors_with_sessions() -> List[Dict[str, str]]:
     return editors
 
 
-def _query_period_daily_seconds(period_start: datetime, period_end: datetime):
+def _query_period_daily_seconds(conn, period_start: datetime, period_end: datetime):
     """Fetch per-user, per-day time tracking seconds within the period."""
     columns_union = " UNION ALL ".join(
         f"SELECT column_values FROM {table}" for table in TIME_TRACKING_TABLES
@@ -210,13 +210,12 @@ def _query_period_daily_seconds(period_start: datetime, period_end: datetime):
         GROUP BY user_id, day_date
         ORDER BY user_id, day_date;
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, {"start": period_start, "end": period_end})
-            return cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute(sql, {"start": period_start, "end": period_end})
+        return cur.fetchall()
 
 
-def _query_period_sessions(period_start: datetime, period_end: datetime):
+def _query_period_sessions(conn, period_start: datetime, period_end: datetime):
     """Fetch per-user sessions clipped to the requested period."""
     columns_union = """
         SELECT column_values, name AS pulse_name, item_id::bigint AS pulse_id, board_id::bigint AS board_id,
@@ -282,10 +281,9 @@ def _query_period_sessions(period_start: datetime, period_end: datetime):
           AND GREATEST(started_at, b.period_start) < LEAST(ended_at, b.period_end)
         ORDER BY user_id, clip_start;
     """
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, {"start": period_start, "end": period_end})
-            return cur.fetchall()
+    with conn.cursor() as cur:
+        cur.execute(sql, {"start": period_start, "end": period_end})
+        return cur.fetchall()
 
 
 def _build_summary(
@@ -375,8 +373,11 @@ def compute_period_editor_hours(start_date: str, end_date: str) -> Dict[str, obj
     """
     period_start, period_end = _resolve_period_bounds(start_date, end_date)
     day_starts, day_labels = _build_day_sequence(period_start, period_end)
-    rows = _query_period_daily_seconds(period_start, period_end)
-    session_rows = _query_period_sessions(period_start, period_end)
+    with get_connection() as conn:
+        ensure_schema(conn)
+        rows = _query_period_daily_seconds(conn, period_start, period_end)
+        session_rows = _query_period_sessions(conn, period_start, period_end)
+        users_map = _load_user_map(conn)
     user_daily: Dict[str, Dict[date, float]] = {}
     user_sessions: Dict[str, List[Tuple[datetime, datetime, str | None]]] = {}
     for user_id, day_date, seconds in rows or []:
@@ -394,7 +395,6 @@ def compute_period_editor_hours(start_date: str, end_date: str) -> Dict[str, obj
         )
     for session_list in user_sessions.values():
         session_list.sort(key=lambda pair: pair[0])
-    users_map = _load_user_map()
     return _build_summary(
         period_start,
         period_end,

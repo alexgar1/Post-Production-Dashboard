@@ -3,19 +3,35 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_from_directory
 
-from db_helpers import DatabaseDriverMissing, get_connection
+from db_helpers import DatabaseDriverMissing, ensure_schema, get_connection
 from query import build_period_report_csv, compute_period_editor_hours, list_editors_with_sessions
+from updateDb import sync_from_monday
 
 app = Flask(__name__)
 
-DEBUG_MODE = True
+DEBUG_MODE = os.getenv("FLASK_DEBUG") == "1"
+PUBLIC_DIR = Path(__file__).resolve().parent / "public"
 
 
 def _error_response(message: str, status_code: int = 500):
     return jsonify({"status": "error", "message": message}), status_code
+
+
+def _cron_request_is_authorized():
+    cron_secret = os.getenv("CRON_SECRET")
+    if not cron_secret:
+        return None
+    return request.headers.get("Authorization") == f"Bearer {cron_secret}"
+
+
+@app.route("/", methods=["GET"])
+@app.route("/index.html", methods=["GET"])
+def index():
+    return send_from_directory(PUBLIC_DIR, "index.html")
 
 
 @app.route("/api/status", methods=["GET"])
@@ -23,6 +39,7 @@ def status():
     """Confirm Flask can reach Postgres."""
     try:
         with get_connection() as conn:
+            ensure_schema(conn)
             with conn.cursor() as cur:
                 cur.execute("SELECT 1;")
                 cur.fetchone()
@@ -71,6 +88,25 @@ def editors_endpoint():
         return _error_response("failed_to_load_editors", status_code=500)
 
     return jsonify({"status": "ok", "editors": editors})
+
+
+@app.route("/api/cron/monday-sync", methods=["GET"])
+def monday_sync_endpoint():
+    """Trigger a full Monday -> Postgres sync for Vercel Cron."""
+    is_authorized = _cron_request_is_authorized()
+    if is_authorized is None:
+        return _error_response("cron_secret_not_configured", status_code=500)
+    if not is_authorized:
+        return _error_response("unauthorized", status_code=401)
+
+    try:
+        summary = sync_from_monday()
+    except DatabaseDriverMissing as exc:
+        return _error_response(str(exc), status_code=500)
+    except Exception as exc:
+        return _error_response(str(exc), status_code=500)
+
+    return jsonify({"status": "ok", "sync": summary})
 
 
 if __name__ == "__main__":
